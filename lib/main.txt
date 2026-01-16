@@ -1,0 +1,202 @@
+import 'package:flutter/material.dart';
+import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'package:charts_flutter/flutter.dart' as charts;
+
+void main() {
+  runApp(const MonitoringApp());
+}
+
+/// Root widget
+class MonitoringApp extends StatelessWidget {
+  const MonitoringApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: DashboardPage(),
+    );
+  }
+}
+
+/// Dashboard page (stateful for live updates)
+class DashboardPage extends StatefulWidget {
+  const DashboardPage({super.key});
+
+  @override
+  State<DashboardPage> createState() => _DashboardPageState();
+}
+
+class _DashboardPageState extends State<DashboardPage> {
+  late IO.Socket socket;
+
+  // Current metrics
+  int cpuUsage = 0;
+  int memoryUsage = 0;
+  int requestRate = 0;
+
+  // Historical metrics for charts (last 30 points)
+  final List<TimeSeriesMetric> cpuHistory = [];
+  final List<TimeSeriesMetric> memoryHistory = [];
+  final List<TimeSeriesMetric> requestHistory = [];
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Initialize WebSocket connection to backend
+    socket = IO.io(
+      'http://localhost:3000',
+      IO.OptionBuilder()
+          .setTransports(['websocket'])
+          .disableAutoConnect()
+          .build(),
+    );
+
+    socket.connect();
+
+    // Listen for "metrics" events from backend
+    socket.on('metrics', (data) {
+      final now = DateTime.now();
+
+      setState(() {
+        cpuUsage = data['cpu'];
+        memoryUsage = data['memory'];
+        requestRate = data['requests'];
+
+        // Add to history lists for charts
+        cpuHistory.add(TimeSeriesMetric(time: now, value: cpuUsage));
+        memoryHistory.add(TimeSeriesMetric(time: now, value: memoryUsage));
+        requestHistory.add(TimeSeriesMetric(time: now, value: requestRate));
+
+        // Keep last 30 points only
+        if (cpuHistory.length > 30) cpuHistory.removeAt(0);
+        if (memoryHistory.length > 30) memoryHistory.removeAt(0);
+        if (requestHistory.length > 30) requestHistory.removeAt(0);
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    socket.disconnect();
+    super.dispose();
+  }
+
+  /// Card widget for a single metric
+  Widget metricCard({
+    required String title,
+    required String value,
+    required Color color,
+  }) {
+    return Expanded(
+      child: Card(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        elevation: 6,
+        margin: const EdgeInsets.all(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                value,
+                style: TextStyle(
+                  fontSize: 26,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Line chart widget for historical data
+  Widget metricChart(String title, List<TimeSeriesMetric> data, Color color) {
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      elevation: 4,
+      margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 200, // fixed chart height
+              child: charts.TimeSeriesChart(
+              _createSeries(data, color),
+              animate: true,
+              dateTimeFactory: charts.LocalDateTimeFactory(),
+            )),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Convert data to chart series
+  static List<charts.Series<TimeSeriesMetric, DateTime>> _createSeries(
+      List<TimeSeriesMetric> data, Color color) {
+    return [
+      charts.Series<TimeSeriesMetric, DateTime>(
+        id: 'Metrics',
+        colorFn: (_, __) => charts.ColorUtil.fromDartColor(color),
+        domainFn: (TimeSeriesMetric metric, _) => metric.time,
+        measureFn: (TimeSeriesMetric metric, _) => metric.value,
+        data: data,
+      )
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Real-Time Monitoring Dashboard'),
+        centerTitle: true,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            // Row of cards for quick glance
+            Row(
+              children: [
+                metricCard(title: 'CPU Usage', value: '$cpuUsage %', color: Colors.red),
+                metricCard(title: 'Memory Usage', value: '$memoryUsage %', color: Colors.green),
+                metricCard(title: 'Requests/sec', value: '$requestRate', color: Colors.blue),
+              ],
+            ),
+
+            // Charts for historical metrics
+            metricChart('CPU Usage (last 30s)', cpuHistory, Colors.red),
+            metricChart('Memory Usage (last 30s)', memoryHistory, Colors.green),
+            metricChart('Requests/sec (last 30s)', requestHistory, Colors.blue),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Class to store metric value at a specific time
+class TimeSeriesMetric {
+  final DateTime time;
+  final int value;
+
+  TimeSeriesMetric({required this.time, required this.value});
+}
